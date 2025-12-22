@@ -6,6 +6,7 @@ import { ArbitrageExecutor, type ExecutorConfig } from './executor.js';
 import { DEFAULT_CONFIG } from './config.js';
 import type { ArbitrageOpportunity, MarketPair, ScannerConfig } from './types.js';
 import { info, warn, error, logArbitrage, logStats, debug } from './logger.js';
+import { notifyOpportunity, notifyStartup } from './telegram.js';
 
 export type MarketMode = 'all' | 'crypto' | 'short';
 
@@ -79,6 +80,9 @@ export class PolyArbScanner {
     this.opportunitiesFound++;
     logArbitrage(opp);
 
+    // Send Telegram notification
+    notifyOpportunity(opp).catch((err) => error('Telegram notification failed', err));
+
     // Execute if enabled and not already executing
     if (this.executionEnabled && this.executor && !this.isExecuting) {
       this.isExecuting = true;
@@ -143,6 +147,9 @@ export class PolyArbScanner {
       }
 
       info('Scanner running - monitoring for arbitrage opportunities...');
+
+      // Send Telegram startup notification
+      notifyStartup(this.marketPairs.length, this.mode).catch(() => {});
     } catch (err) {
       error('Failed to start scanner', err);
       this.stop();

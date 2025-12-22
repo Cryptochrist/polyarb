@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { PolyArbScanner, type MarketMode } from './scanner.js';
 import { setLogLevel, LogLevel, info, error, warn } from './logger.js';
+import { initTelegram } from './telegram.js';
 import type { ScannerConfig } from './types.js';
 import type { ExecutorConfig } from './executor.js';
 
@@ -173,6 +174,12 @@ async function main(): Promise<void> {
   } else if (args.execute) {
     info('Dry run mode - trades will be simulated');
   }
+
+  // Initialize Telegram notifications
+  initTelegram(
+    process.env['TELEGRAM_BOT_TOKEN'],
+    process.env['TELEGRAM_CHAT_ID']
+  );
 
   // Log market mode
   if (args.mode === 'crypto') {
