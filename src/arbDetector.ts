@@ -21,11 +21,24 @@ interface TokenPrice {
   lastUpdate: Date;
 }
 
+export interface NearMissOpportunity {
+  market: import('./types.js').GammaMarket;
+  type: OpportunityType;
+  totalCost: number;      // For BUY_BOTH: sum of asks
+  totalBids: number;      // For SELL_BOTH: sum of bids
+  profitGap: number;      // How far from profitable (negative = loss)
+  yesPrice: number;
+  noPrice: number;
+  maxShares: number;
+  timestamp: Date;
+}
+
 export class ArbitrageDetector {
   private config: ScannerConfig;
   private marketPairs: Map<string, MarketPair> = new Map(); // tokenId -> MarketPair
   private tokenPrices: Map<string, TokenPrice> = new Map(); // tokenId -> price data
   private marketLookup: Map<string, MarketPair> = new Map(); // marketId -> MarketPair
+  private bestNearMiss: NearMissOpportunity | null = null;
 
   constructor(config: ScannerConfig) {
     this.config = config;
@@ -203,6 +216,81 @@ export class ArbitrageDetector {
       marketsTracked: this.marketLookup.size,
       tokensWithPrices: this.tokenPrices.size,
     };
+  }
+
+  // Find the closest-to-profitable opportunity across all markets
+  findBestNearMiss(): NearMissOpportunity | null {
+    let bestNearMiss: NearMissOpportunity | null = null;
+    const checkedMarkets = new Set<string>();
+
+    for (const [tokenId, pair] of this.marketPairs) {
+      if (checkedMarkets.has(pair.market.id)) continue;
+      checkedMarkets.add(pair.market.id);
+
+      const yesPrice = this.tokenPrices.get(pair.yesTokenId);
+      const noPrice = this.tokenPrices.get(pair.noTokenId);
+
+      // Check BUY_BOTH near miss (asks sum close to $1.00)
+      if (yesPrice?.bestAsk && noPrice?.bestAsk) {
+        const totalCost = yesPrice.bestAsk + noPrice.bestAsk;
+        const profitGap = 1.0 - totalCost; // positive = profitable, negative = loss
+        const yesSize = yesPrice.bestAskSize ?? 0;
+        const noSize = noPrice.bestAskSize ?? 0;
+        const maxShares = Math.min(yesSize, noSize);
+
+        if (maxShares > 0 && pair.market.liquidityNum >= this.config.minLiquidity) {
+          if (!bestNearMiss || profitGap > bestNearMiss.profitGap) {
+            bestNearMiss = {
+              market: pair.market,
+              type: 'BUY_BOTH',
+              totalCost,
+              totalBids: (yesPrice.bestBid ?? 0) + (noPrice.bestBid ?? 0),
+              profitGap,
+              yesPrice: yesPrice.bestAsk,
+              noPrice: noPrice.bestAsk,
+              maxShares,
+              timestamp: new Date(),
+            };
+          }
+        }
+      }
+
+      // Check SELL_BOTH near miss (bids sum close to $1.00)
+      if (yesPrice?.bestBid && noPrice?.bestBid) {
+        const totalBids = yesPrice.bestBid + noPrice.bestBid;
+        const profitGap = totalBids - 1.0; // positive = profitable, negative = loss
+        const yesSize = yesPrice.bestBidSize ?? 0;
+        const noSize = noPrice.bestBidSize ?? 0;
+        const maxShares = Math.min(yesSize, noSize);
+
+        if (maxShares > 0 && pair.market.liquidityNum >= this.config.minLiquidity) {
+          if (!bestNearMiss || profitGap > bestNearMiss.profitGap) {
+            bestNearMiss = {
+              market: pair.market,
+              type: 'SELL_BOTH',
+              totalCost: 1.0,
+              totalBids,
+              profitGap,
+              yesPrice: yesPrice.bestBid,
+              noPrice: noPrice.bestBid,
+              maxShares,
+              timestamp: new Date(),
+            };
+          }
+        }
+      }
+    }
+
+    this.bestNearMiss = bestNearMiss;
+    return bestNearMiss;
+  }
+
+  getBestNearMiss(): NearMissOpportunity | null {
+    return this.bestNearMiss;
+  }
+
+  resetBestNearMiss(): void {
+    this.bestNearMiss = null;
   }
 
   // Clear stale price data (older than specified ms)

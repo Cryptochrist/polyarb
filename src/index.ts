@@ -4,6 +4,8 @@ import { setLogLevel, LogLevel, info, error, warn } from './logger.js';
 import { initTelegram } from './telegram.js';
 import type { ScannerConfig } from './types.js';
 import type { ExecutorConfig } from './executor.js';
+import type { BTCMarketInterval } from './gammaApi.js';
+import { listAllMarkets } from './listMarkets.js';
 
 // Load environment variables
 dotenv.config();
@@ -16,6 +18,8 @@ interface ParsedArgs {
   dryRun: boolean;
   mode: MarketMode;
   maxHours?: number;
+  intervals?: BTCMarketInterval[];
+  listOnly: boolean;  // Just list markets and exit
 }
 
 // Parse command line arguments
@@ -27,6 +31,7 @@ function parseArgs(): ParsedArgs {
     execute: false,
     dryRun: true,
     mode: 'all',
+    listOnly: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -77,6 +82,20 @@ function parseArgs(): ParsedArgs {
           i++;
         }
         break;
+      case '--updown':
+        result.mode = 'updown';
+        break;
+      case '--intervals':
+        if (nextArg) {
+          // Parse comma-separated intervals like "15m,30m,1h"
+          result.intervals = nextArg.split(',').map(s => s.trim()) as BTCMarketInterval[];
+          i++;
+        }
+        break;
+      case '--list':
+        result.listOnly = true;
+        result.mode = 'updown';  // List mode uses updown markets
+        break;
     }
   }
 
@@ -122,6 +141,10 @@ Market Filtering:
   --crypto                  Focus only on Crypto category markets (faster moves)
   --short                   Focus on short-duration markets (resolving soon)
   --max-hours <hours>       Max hours until resolution for --short mode (default: 24)
+  --updown                  BTC/ETH/XRP/SOL up/down markets with cross-market arb
+  --intervals <list>        Intervals for --updown mode (default: 15m,1h,4h,1d)
+                            Example: --intervals 15m,1h
+  --list                    List all active up/down markets with prices and exit
 
 Execution Options:
   --execute                 Enable trade execution (dry run by default)
@@ -137,9 +160,11 @@ Examples:
   npm start                              # Scan all markets
   npm start -- --crypto                  # Scan only crypto markets
   npm start -- --short --max-hours 4     # Markets resolving in 4 hours
+  npm start -- --updown                  # All crypto up/down + cross-market arb
+  npm start -- --updown --intervals 15m,1h # Only 15m and 1h markets
   npm start -- --execute                 # Scan + dry run execution
   npm start -- --execute --live          # Scan + LIVE execution
-  npm start -- --crypto --execute        # Crypto markets + execution
+  npm start -- --updown --execute        # Up/down + cross-market + execution
 
 Setup for Live Execution:
   1. Copy .env.example to .env
@@ -147,10 +172,15 @@ Setup for Live Execution:
   3. Run with --execute --live
 
 Arbitrage Types:
-  BUY_BOTH:  Buy YES + NO when asks sum < $1.00 (guaranteed profit)
-  SELL_BOTH: Mint for $1.00 and sell when bids sum > $1.00
+  Single-Market:
+    BUY_BOTH:  Buy YES + NO when asks sum < $1.00 (guaranteed profit)
+    SELL_BOTH: Mint for $1.00 and sell when bids sum > $1.00
 
-  Example: YES ask $0.48 + NO ask $0.51 = $0.99 -> $0.01 profit per share
+  Cross-Market (--updown mode):
+    When 1h and 15m markets resolve at same time with different ref prices:
+    - 1h started at $100,000 BTC, 15m started at $99,000 BTC
+    - Buy 1h-DOWN + 15m-UP: both pay $1 if price ends between refs!
+    - "Profit zone" = range between the two reference prices
 `);
 }
 
@@ -167,6 +197,13 @@ async function main(): Promise<void> {
   if (args.debug) {
     setLogLevel(LogLevel.DEBUG);
     info('Debug logging enabled');
+  }
+
+  // Handle --list mode: just show markets and exit
+  if (args.listOnly) {
+    const intervals = args.intervals ?? ['15m', '1h', '4h', '1d'];
+    await listAllMarkets(intervals);
+    return;
   }
 
   if (args.execute && !args.dryRun) {
@@ -186,6 +223,9 @@ async function main(): Promise<void> {
     info('Mode: CRYPTO - focusing on cryptocurrency markets');
   } else if (args.mode === 'short') {
     info(`Mode: SHORT - focusing on markets resolving within ${args.maxHours ?? 24} hours`);
+  } else if (args.mode === 'updown') {
+    const intervals = args.intervals ?? ['15m', '1h', '4h', '1d'];
+    info(`Mode: UPDOWN - focusing on crypto up/down markets (${intervals.join(', ')})`);
   }
 
   const scanner = new PolyArbScanner({
@@ -193,6 +233,7 @@ async function main(): Promise<void> {
     executorConfig: args.executorConfig,
     mode: args.mode,
     maxHours: args.maxHours,
+    intervals: args.intervals,
   });
 
   // Graceful shutdown handlers
