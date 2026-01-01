@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(npm run build:*)",
+      "Bash(tasklist:*)",
+      "Bash(npm run:*)",
+      "Bash(pm2 logs:*)",
+      "Bash(node dist/testBuy.js:*)",
+      "Bash(node dist/checkBalance.js:*)",
+      "Bash(pm2 list:*)",
+      "Bash(powershell -Command:*)"
     ]
   }
 }

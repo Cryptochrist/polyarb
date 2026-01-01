@@ -103,8 +103,13 @@ function parseArgs(): ParsedArgs {
   if (result.execute) {
     const privateKey = process.env['PRIVATE_KEY'];
     const funderAddress = process.env['FUNDER_ADDRESS'] || '';
-    const signatureType = parseInt(process.env['SIGNATURE_TYPE'] || '1', 10) as 0 | 1 | 2;
+    const signatureType = parseInt(process.env['SIGNATURE_TYPE'] || '0', 10) as 0 | 1 | 2;
     const maxPositionSize = parseFloat(process.env['MAX_POSITION_SIZE'] || '100');
+
+    // API credentials (faster startup if provided)
+    const apiKey = process.env['POLY_API_KEY'];
+    const apiSecret = process.env['POLY_API_SECRET'];
+    const passphrase = process.env['POLY_PASSPHRASE'];
 
     if (!privateKey && !result.dryRun) {
       console.error('ERROR: PRIVATE_KEY environment variable required for live execution');
@@ -118,6 +123,9 @@ function parseArgs(): ParsedArgs {
       signatureType,
       maxPositionSize,
       dryRun: result.dryRun,
+      apiKey,
+      apiSecret,
+      passphrase,
     };
   }
 

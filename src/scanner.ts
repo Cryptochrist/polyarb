@@ -134,17 +134,33 @@ export class PolyArbScanner {
       ? `${opp.longInterval} DOWN + ${opp.shortInterval} UP`
       : `${opp.longInterval} UP + ${opp.shortInterval} DOWN`;
 
-    info(`CROSS-MARKET ARB: ${opp.longMarket.slug.split('-')[0]!.toUpperCase()} | ${strategyStr}`);
+    info(`CROSS-MARKET ZONE BET: ${opp.longMarket.slug.split('-')[0]!.toUpperCase()} | ${strategyStr}`);
     info(`  Refs: $${opp.longRefPrice.toLocaleString()} vs $${opp.shortRefPrice.toLocaleString()}`);
     info(`  Zone: $${opp.profitZoneLow.toLocaleString()} - $${opp.profitZoneHigh.toLocaleString()} (${opp.profitZonePercent.toFixed(3)}%)`);
     info(`  Entry: $${opp.entryCost.toFixed(4)} | Profit: $${opp.maxProfit.toFixed(4)}/share | Max: ${opp.maxShares.toFixed(2)} shares`);
     info(`  Resolves in: ${opp.minutesUntilResolution.toFixed(1)} minutes`);
 
-    // Send Telegram notification
-    notifyCrossMarketOpportunity(opp).catch((err) => error('Telegram notification failed', err));
-
-    // TODO: Execute cross-market trades if enabled
-    // This requires buying positions on two different markets simultaneously
+    // Execute cross-market zone bet if enabled and entry cost <= $1.00
+    if (this.executionEnabled && this.executor && !this.isExecuting && opp.entryCost <= 1.00) {
+      this.isExecuting = true;
+      try {
+        const result = await this.executor.executeCrossMarket(opp);
+        if (result.success) {
+          info(`Cross-market trade executed: ${result.sharesTraded.toFixed(2)} shares, cost: $${result.totalCost.toFixed(2)}, max profit: $${result.maxProfit.toFixed(4)}`);
+          // Send Telegram notification for executed trade
+          notifyCrossMarketOpportunity(opp).catch((err) => error('Telegram notification failed', err));
+        } else if (result.error) {
+          warn(`Cross-market trade skipped: ${result.error}`);
+        }
+      } catch (err) {
+        error('Cross-market execution error', err);
+      } finally {
+        this.isExecuting = false;
+      }
+    } else if (opp.entryCost <= 1.00) {
+      // Log profitable opportunities even if execution is disabled
+      info(`  ✅ PROFITABLE (entry ≤ $1.00) - execution ${this.executionEnabled ? 'busy' : 'disabled'}`);
+    }
   }
 
   async start(): Promise<void> {
@@ -310,7 +326,7 @@ export class PolyArbScanner {
     // Refresh market list periodically to catch new markets
     // For 'updown' mode, refresh more frequently since markets change every 15 minutes
     const refreshInterval = this.mode === 'updown'
-      ? 30000  // 30 seconds for updown mode (new markets every 15m)
+      ? 15000  // 15 seconds for updown mode (fast refresh for cross-market opportunities)
       : this.config.scanIntervalMs * 12; // ~1 minute for other modes
 
     this.marketRefreshInterval = setInterval(async () => {
@@ -385,6 +401,23 @@ export class PolyArbScanner {
         if (this.mode === 'updown') {
           // Reload any missing reference prices (new 15m candles may have started)
           await this.crossMarketDetector.loadReferencePrices();
+
+          // Refresh orderbooks to ensure we have current prices
+          // (WebSocket may not be receiving all updates)
+          const tokenIds = this.detector.getAllTokenIds();
+          const orderBooks = await fetchMultipleOrderBooks(tokenIds, this.config.maxConcurrentRequests);
+          for (const [tokenId, book] of orderBooks) {
+            // Update both detectors with fresh orderbook data
+            this.detector.updateFromOrderBook(tokenId, book);
+            this.crossMarketDetector.updateFromOrderBook(tokenId, book);
+          }
+
+          // Check for single-market arbitrage after orderbook refresh
+          const singleMarketOpps = this.detector.scanAllMarkets();
+          for (const opp of singleMarketOpps) {
+            info(`🚨 SINGLE-MARKET ARB FOUND during refresh: ${opp.market.slug}`);
+            this.handleOpportunity(opp);
+          }
 
           // Get market summary data and send to Telegram
           const marketData = this.crossMarketDetector.getMarketSummaryData();

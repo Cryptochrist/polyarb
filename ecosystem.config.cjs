@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'polyarb',
       script: 'dist/index.js',
-      args: '--updown',
+      args: '--updown --execute --live',
       cwd: __dirname,
       instances: 1,
       autorestart: true,

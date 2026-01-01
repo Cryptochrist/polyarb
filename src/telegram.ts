@@ -124,6 +124,114 @@ export function isTelegramEnabled(): boolean {
   return config?.enabled ?? false;
 }
 
+/**
+ * Notify when attempting to execute a trade
+ */
+export async function notifyExecutionAttempt(
+  type: 'single' | 'cross',
+  asset: string,
+  strategy: string,
+  shares: number,
+  entryCost: number,
+  longOrderAmount: number,
+  shortOrderAmount: number,
+  longPrice: number,
+  shortPrice: number
+): Promise<void> {
+  if (!config?.enabled) return;
+
+  const totalCost = shares * entryCost;
+  const emoji = type === 'cross' ? '🔄' : '⚡';
+
+  const message = `
+${emoji} <b>EXECUTING ${type === 'cross' ? 'CROSS-MARKET' : 'SINGLE-MARKET'}</b>
+
+<b>Asset:</b> ${asset}
+<b>Strategy:</b> ${strategy}
+<b>Shares:</b> ${shares.toFixed(2)}
+
+<b>Order 1:</b> $${longOrderAmount.toFixed(2)} @ ${(longPrice * 100).toFixed(0)}¢
+<b>Order 2:</b> $${shortOrderAmount.toFixed(2)} @ ${(shortPrice * 100).toFixed(0)}¢
+<b>Total Cost:</b> $${totalCost.toFixed(2)}
+
+<b>Time:</b> ${new Date().toISOString()}
+`.trim();
+
+  await sendTelegramMessage(message);
+}
+
+/**
+ * Notify when a trade is successfully executed
+ */
+export async function notifyExecutionSuccess(
+  type: 'single' | 'cross',
+  asset: string,
+  strategy: string,
+  shares: number,
+  totalCost: number,
+  maxProfit: number,
+  longOrderId?: string,
+  shortOrderId?: string
+): Promise<void> {
+  if (!config?.enabled) return;
+
+  const message = `
+✅ <b>TRADE EXECUTED</b>
+
+<b>Type:</b> ${type === 'cross' ? 'Cross-Market' : 'Single-Market'}
+<b>Asset:</b> ${asset}
+<b>Strategy:</b> ${strategy}
+
+<b>Shares:</b> ${shares.toFixed(2)}
+<b>Cost:</b> $${totalCost.toFixed(2)}
+<b>Max Profit:</b> $${maxProfit.toFixed(2)}
+
+<b>Order IDs:</b>
+  ${longOrderId ? longOrderId.slice(0, 16) + '...' : 'pending'}
+  ${shortOrderId ? shortOrderId.slice(0, 16) + '...' : 'pending'}
+
+<b>Time:</b> ${new Date().toISOString()}
+
+@cryptochrist
+`.trim();
+
+  await sendTelegramMessage(message);
+}
+
+/**
+ * Notify when a trade execution fails or is rejected
+ */
+export async function notifyExecutionFailure(
+  type: 'single' | 'cross',
+  asset: string,
+  strategy: string,
+  reason: string,
+  shares?: number,
+  entryCost?: number
+): Promise<void> {
+  if (!config?.enabled) return;
+
+  let details = '';
+  if (shares !== undefined && entryCost !== undefined) {
+    details = `
+<b>Attempted:</b> ${shares.toFixed(2)} shares @ $${entryCost.toFixed(4)}/share`;
+  }
+
+  const message = `
+❌ <b>EXECUTION REJECTED</b>
+
+<b>Type:</b> ${type === 'cross' ? 'Cross-Market' : 'Single-Market'}
+<b>Asset:</b> ${asset}
+<b>Strategy:</b> ${strategy}
+${details}
+<b>Reason:</b> ${reason}
+
+<b>Time:</b> ${new Date().toISOString()}
+`.trim();
+
+  await sendTelegramMessage(message);
+}
+
 export async function notifyNearMiss(nearMiss: NearMissOpportunity, marketsCount: number, uptime: number): Promise<void> {
   if (!config?.enabled) return;
 
@@ -405,6 +513,9 @@ export async function notifyMarketSummary(
   let message = `📊 <b>Market Summary</b>\n`;
   message += `<code>Int Time │    Ref Price │  ⬆Ask ⬇Ask  =Sum</code>\n`;
 
+  // Track if we find true arbitrage (sum < 100¢)
+  let hasTrueArbitrage = false;
+
   for (const asset of sortedAssets) {
     let assetMarkets = byAsset.get(asset)!;
 
@@ -456,8 +567,10 @@ export async function notifyMarketSummary(
       const sumAsks = (upAskVal ?? 0) + (downAskVal ?? 0);
       const sumStr = hasBothAsks ? (sumAsks * 100).toFixed(0) + '¢' : '—';
 
-      // Mark profitable opportunities (sum < 100 cents)
-      const profitMark = hasBothAsks && sumAsks < 1.0 ? ' 🚨' : '';
+      // Mark true arbitrage opportunities (sum < 100 cents)
+      const isTrueArb = hasBothAsks && sumAsks < 1.0;
+      const profitMark = isTrueArb ? ' 🚨' : '';
+      if (isTrueArb) hasTrueArbitrage = true;
 
       message += `<code>${m.interval.padEnd(3)}</code> ${timeStr.padStart(4)} │ ${refStr.padStart(10)} │ ⬆${upAsk.padStart(3)} ⬇${downAsk.padStart(3)} =${sumStr.padStart(4)}${profitMark}\n`;
     }
@@ -477,7 +590,6 @@ export async function notifyMarketSummary(
     byResolution.get(key)!.push(m);
   }
 
-  let hasProfitable = false;
   let pairCount = 0;
 
   for (const [, group] of byResolution) {
@@ -521,15 +633,13 @@ export async function notifyMarketSummary(
         }
       }
 
-      const profit = entryCost ? 2.0 - entryCost : null;
-      const isProfitable = profit !== null && profit > 0;
-      if (isProfitable) hasProfitable = true;
-
-      const profitStr = profit !== null
-        ? (isProfitable ? `✅+${(profit * 100).toFixed(0)}¢` : `${(profit * 100).toFixed(0)}¢`)
+      // Show entry cost - checkmark if cost <= $1.00 (guaranteed break-even or profit since min payout is $1)
+      const isTrueCrossArb = entryCost !== null && entryCost <= 1.0;
+      const costStr = entryCost !== null
+        ? (isTrueCrossArb ? `✅${(entryCost * 100).toFixed(0)}¢` : `${(entryCost * 100).toFixed(0)}¢`)
         : '—';
 
-      message += `${asset} ${timeStr}: ${strategy} │ ${zonePercent.toFixed(1)}% │ ${profitStr}\n`;
+      message += `${asset} ${timeStr}: ${strategy} │ ${zonePercent.toFixed(1)}% │ ${costStr}\n`;
     } else if (longRef && shortRef) {
       // Same ref price - show the refs
       let refStr: string;
@@ -564,9 +674,9 @@ export async function notifyMarketSummary(
   // Footer
   message += `\n⏱ ${uptimeStr} │ ${new Date().toISOString().slice(11, 19)}Z`;
 
-  // Tag if profitable
-  if (hasProfitable) {
-    message += `\n\n@cryptochrist`;
+  // Only tag for TRUE arbitrage (sum < 100¢), not cross-market zone bets
+  if (hasTrueArbitrage) {
+    message += `\n\n🚨 TRUE ARBITRAGE FOUND!\n@cryptochrist`;
   }
 
   await sendTelegramMessage(message);
